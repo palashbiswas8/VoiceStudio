@@ -3087,11 +3087,19 @@ class OpenAICompatASRBackend(ASRBackend):
         if raw_segments:
             for seg in raw_segments:
                 seg_dict = seg if isinstance(seg, dict) else seg.model_dump()
+                # TBS 25 Nov 2026: keep word timing when the server sends it inside each segment
+                # (our tbs-voice-asr does). Plain OpenAI servers send none, so this stays [] for them.
+                words = []
+                for w in seg_dict.get("words") or []:
+                    w = w if isinstance(w, dict) else getattr(w, "model_dump", lambda: {})()
+                    txt = str(w.get("text") or w.get("word") or "").strip()
+                    if txt and w.get("start") is not None and w.get("end") is not None:
+                        words.append({"text": txt, "start": float(w["start"]), "end": float(w["end"])})
                 segments_out.append({
                     "text": (seg_dict.get("text") or "").strip(),
                     "start": seg_dict.get("start", 0.0),
                     "end": seg_dict.get("end", 0.0),
-                    "words": [],  # word-level timing isn't part of this API
+                    "words": words,
                 })
         else:
             # Plain text response (json/text format) — single-segment shape,
@@ -3099,10 +3107,17 @@ class OpenAICompatASRBackend(ASRBackend):
             text = (getattr(resp, "text", None) or "").strip()
             if text:
                 segments_out.append({"text": text, "start": 0.0, "end": None, "words": []})
-        chunks = [
-            {"text": seg["text"], "timestamp": (seg["start"], seg["end"])}
-            for seg in segments_out
-        ]
+        if segments_out and all(seg["words"] for seg in segments_out if seg["text"]):
+            # TBS: word-level chunks, like the local Whisper backends give with word timestamps
+            chunks = [
+                {"text": w["text"], "timestamp": (w["start"], w["end"])}
+                for seg in segments_out for w in seg["words"]
+            ]
+        else:
+            chunks = [
+                {"text": seg["text"], "timestamp": (seg["start"], seg["end"])}
+                for seg in segments_out
+            ]
         language = getattr(resp, "language", None) or "en"
         return {"chunks": chunks, "segments": segments_out, "language": language}
 
